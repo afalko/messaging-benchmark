@@ -227,24 +227,19 @@ public class DumbPulsarTopicConsumeTest {
             }
         });*/
         ExecutorService writeTopics = Executors.newFixedThreadPool(15);
-        int runningTally = 0;
-
         int numTopics = 1000000;
 
         BlockingQueue<Future> consumerFutures = new ArrayBlockingQueue<>(10000);
 
         BlockingQueue<Future> writeFutures = new ArrayBlockingQueue<>(10000);
-        runningTally = 0;
         for (int i = 0; i < numTopics; i++) {
             writeFutures.put(writeTopics.submit(new WriteTopic(i)));
-        }
-        while (!writeFutures.isEmpty()) {
-            if (writeFutures.peek().isDone()) {
-                writeFutures.take().get();
-                runningTally++;
-                //log.info("Created topic #{}", runningTally);
+            if (writeFutures.size() >= 10000) {
+                log.info("Produced 10k topics, ensuring success before proceeding...");
+                clearQueue(writeFutures);
             }
         }
+        clearQueue(writeFutures);
 
         writeTopics.shutdown();
 
@@ -253,10 +248,13 @@ public class DumbPulsarTopicConsumeTest {
         ExecutorService consumeTopics = Executors.newFixedThreadPool(15);
         for (int i = 0; i < numTopics; i++) {
             consumerFutures.put(consumeTopics.submit(new ConsumeTopic(i, 0)));
+            if (consumerFutures.size() >= 10000) {
+                clearQueue(consumerFutures);
+            }
         }
 
-        runningTally = 0;
-        while (!consumerFutures.isEmpty()) {
+        clearQueue(consumerFutures);
+        /*while (!consumerFutures.isEmpty()) {
             if (consumerFutures.peek().isDone()) {
                 Future fut = null;
                 try {
@@ -270,11 +268,22 @@ public class DumbPulsarTopicConsumeTest {
                     consumeTopics.awaitTermination(1, TimeUnit.SECONDS);
                     continue;
                 }
-                runningTally++;
                 //log.info("Consumed from topic #{}", runningTally);
             }
-        }
+        }*/
 
         consumeTopics.shutdownNow();
+    }
+
+    private static int clearQueue(BlockingQueue<Future> futures) throws InterruptedException, ExecutionException {
+        int runningTally = 0;
+        while (!futures.isEmpty()) {
+            if (futures.peek().isDone()) {
+                futures.take().get();
+                runningTally++;
+                //log.info("Created topic #{}", runningTally);
+            }
+        }
+        return runningTally;
     }
 }
