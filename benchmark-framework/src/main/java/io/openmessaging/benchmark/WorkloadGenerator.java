@@ -97,38 +97,14 @@ public class WorkloadGenerator implements ConsumerCallback, AutoCloseable {
         }
         RateLimiter consumeRateLimiter = RateLimiter.create(workload.consumeRate);
 
-        log.info("----- Starting warm-up traffic ------");
+        doWarmup(consumers, producers, produceRateLimiter, runCompleted, consumeRateLimiter);
 
-        Recorder produceLatencyRecorder = new Recorder(TimeUnit.SECONDS.toMicros(30), 5);
-        Recorder produceCumulativeRecorder = new Recorder(TimeUnit.SECONDS.toMicros(30), 5);
-
-        long startTime = System.nanoTime();
-        this.testCompleted = false;
-
-        generateProducerLoad(producers, produceRateLimiter, produceLatencyRecorder, produceCumulativeRecorder);
-        generateConsumerLoad(consumers, consumeRateLimiter);
-
-        getTestResult(1, produceLatencyRecorder, produceCumulativeRecorder,
-                e2eLatencyRecorder, e2eCumulativeLatencyRecorder, startTime);
-        e2eLatencyRecorder.reset();
-        e2eCumulativeLatencyRecorder.reset();
-        runCompleted.set(true);
+        Recorder produceLatencyRecorder;
+        Recorder produceCumulativeRecorder;
+        long startTime;
 
         log.info("----- Starting benchmark traffic ------");
         runCompleted.set(false);
-
-        /**
-         * Only invoke sustainable rate if we configure benchmark to have BOTH producers AND producer rate to be zero
-         * In most cases, we want consumers to be on separate physical hosts. The logic below provides extra protection
-         * from a producer being launched if you only want consumers on a host.
-         */
-        /*if (workload.producerRate == 0 && workload.producersPerTopic > 0) {
-            // Continue with the feedback system to adjust the publish rate
-            executor.execute(() -> {
-                // Run background controller to adjust rate
-                findMaximumSustainableRate(produceRateLimiter, runCompleted);
-            });
-        }*/
 
         produceLatencyRecorder = new Recorder(TimeUnit.SECONDS.toMicros(30), 5);
         produceCumulativeRecorder = new Recorder(TimeUnit.SECONDS.toMicros(30), 5);
@@ -146,6 +122,25 @@ public class WorkloadGenerator implements ConsumerCallback, AutoCloseable {
         runCompleted.set(true);
 
         return result;
+    }
+
+    private void doWarmup(List<BenchmarkConsumer> consumers, List<BenchmarkProducer> producers, RateLimiter produceRateLimiter, AtomicBoolean runCompleted, RateLimiter consumeRateLimiter) {
+        log.info("----- Starting warm-up traffic ------");
+
+        Recorder produceLatencyRecorder = new Recorder(TimeUnit.SECONDS.toMicros(30), 5);
+        Recorder produceCumulativeRecorder = new Recorder(TimeUnit.SECONDS.toMicros(30), 5);
+
+        long startTime = System.nanoTime();
+        this.testCompleted = false;
+
+        generateProducerLoad(producers, produceRateLimiter, produceLatencyRecorder, produceCumulativeRecorder);
+        generateConsumerLoad(consumers, consumeRateLimiter);
+
+        getTestResult(1, produceLatencyRecorder, produceCumulativeRecorder,
+                e2eLatencyRecorder, e2eCumulativeLatencyRecorder, startTime);
+        e2eLatencyRecorder.reset();
+        e2eCumulativeLatencyRecorder.reset();
+        runCompleted.set(true);
     }
 
     /**

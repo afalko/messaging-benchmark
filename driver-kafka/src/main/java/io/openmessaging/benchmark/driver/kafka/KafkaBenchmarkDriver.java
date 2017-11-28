@@ -169,7 +169,6 @@ public class KafkaBenchmarkDriver implements BenchmarkDriver {
                 return future;
             }
         }
-
     }
 
     @Override

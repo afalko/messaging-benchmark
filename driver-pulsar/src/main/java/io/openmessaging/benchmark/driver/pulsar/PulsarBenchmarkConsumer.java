@@ -18,19 +18,26 @@
  */
 package io.openmessaging.benchmark.driver.pulsar;
 
-import io.openmessaging.benchmark.driver.ConsumerCallback;
-import org.apache.pulsar.client.api.Consumer;
-
 import io.openmessaging.benchmark.driver.BenchmarkConsumer;
+import io.openmessaging.benchmark.driver.ConsumerCallback;
+import org.apache.pulsar.client.admin.PersistentTopics;
+import org.apache.pulsar.client.api.Consumer;
+import org.apache.pulsar.client.api.Message;
 
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class PulsarBenchmarkConsumer implements BenchmarkConsumer {
 
     private final Consumer consumer;
+    private final PersistentTopics persistentTopics;
+    private final ExecutorService executor;
 
-    public PulsarBenchmarkConsumer(Consumer consumer) {
+    public PulsarBenchmarkConsumer(Consumer consumer, PersistentTopics persistentTopics) {
         this.consumer = consumer;
+        this.persistentTopics = persistentTopics;
+        executor = Executors.newSingleThreadExecutor();
     }
 
     @Override
@@ -40,10 +47,42 @@ public class PulsarBenchmarkConsumer implements BenchmarkConsumer {
 
     @Override
     public CompletableFuture<Void> receiveAsync(ConsumerCallback callback, final boolean testCompleted) {
-        // TODO:
-        if (callback == null) {
-            throw new RuntimeException("Unimplemented consumer for pulsar");
-        }
-        return null;
+        CompletableFuture<Void> future = new CompletableFuture<>();
+        this.executor.execute(() -> {
+            try {
+                while (!testCompleted) {
+                    Message message = consumer.receive();
+                    callback.messageReceived(message.getData(), System.nanoTime());
+                    if (consumer.hasReachedEndOfTopic()) {
+                        //persistentTopics.resetCursor();
+                    }
+                    /*conf.setMessageListener((consumer, msg) -> {
+                        consumerCallback.messageReceived(msg.getData(), System.nanoTime());
+                        consumer.acknowledgeAsync(msg);
+                    });*/
+                    /*if (consumer.hasReachedEndOfTopic()) {
+                        consumer.getSubscription()
+                    }
+                    Message message = consumer.receive();
+                    for (ConsumerRecord<byte[], byte[]> record : records) {
+                        callback.messageReceived(record.value(), System.nanoTime());
+
+                        offsetMap.put(new TopicPartition(record.topic(), record.partition()),
+                                new OffsetAndMetadata(record.offset()));
+                    }
+
+                    if (!offsetMap.isEmpty()) {
+                        consumer.commitSync(offsetMap);
+                    }*/
+                }
+
+                consumer.unsubscribe();
+                consumer.close();
+            } catch (Throwable e) {
+                future.completeExceptionally(e);
+            }
+            future.complete(null);
+        });
+        return future;
     }
 }

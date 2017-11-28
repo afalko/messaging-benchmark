@@ -27,7 +27,9 @@ import io.openmessaging.benchmark.driver.BenchmarkDriver;
 import io.openmessaging.benchmark.driver.BenchmarkProducer;
 import io.openmessaging.benchmark.driver.ConsumerCallback;
 import io.openmessaging.benchmark.driver.pulsar.config.PulsarConfig;
+import org.apache.pulsar.client.admin.PersistentTopics;
 import org.apache.pulsar.client.admin.PulsarAdmin;
+import org.apache.pulsar.client.admin.PulsarAdminException;
 import org.apache.pulsar.client.api.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -92,15 +94,18 @@ public class PulsarBenchmarkDriver implements BenchmarkDriver {
     @Override
     public CompletableFuture<BenchmarkConsumer> createConsumer(String topic, String subscriptionName,
                                                                ConsumerCallback consumerCallback) {
+        PersistentTopics persistentTopics = adminClient.persistentTopics();
+        // Ignore messages from previous tests
+        try {
+            persistentTopics.resetCursor(topic, subscriptionName, System.currentTimeMillis());
+        } catch (PulsarAdminException e) {
+            throw new RuntimeException(e);
+        }
         ConsumerConfiguration conf = new ConsumerConfiguration();
         conf.setSubscriptionType(SubscriptionType.Failover);
-        conf.setMessageListener((consumer, msg) -> {
-            consumerCallback.messageReceived(msg.getData(), System.nanoTime());
-            consumer.acknowledgeAsync(msg);
-        });
 
         return client.subscribeAsync(topic, subscriptionName, conf)
-                .thenApply(consumer -> new PulsarBenchmarkConsumer(consumer));
+                .thenApply(consumer -> new PulsarBenchmarkConsumer(consumer, persistentTopics));
     }
 
     @Override
