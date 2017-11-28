@@ -67,9 +67,9 @@ class WriteTopic implements Callable {
         adminClient.persistentTopics().createPartitionedTopic(topic, 1);
         Producer producer = client.createProducer(topic);
         producer.send(new byte[10]);
-        //if (messageId % 1000 == 0) {
+        if (messageId % 1000 == 0) {
             log.info("{}: Produced message {}", formatter.format(new Date()), messageId);
-        //}
+        }
         return null;
     }
 }
@@ -78,11 +78,13 @@ class ConsumeTopic implements Callable {
     private static final Logger log = LoggerFactory.getLogger(ConsumeTopic.class);
 
     private final int messageId;
+    private final long startTime;
     private final PulsarClient client;
     private final PulsarAdmin adminClient;
 
-    public ConsumeTopic(int messageId) throws PulsarClientException, MalformedURLException {
+    public ConsumeTopic(int messageId, long startTime) throws PulsarClientException, MalformedURLException {
         this.messageId = messageId;
+        this.startTime = startTime;
         client = CreateClients.pulsarClient;
         adminClient = CreateClients.pulsarAdmin;
     }
@@ -90,6 +92,8 @@ class ConsumeTopic implements Callable {
     @Override
     public Object call() throws Exception {
         String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/topic-" + messageId;
+
+        adminClient.persistentTopics().resetCursor(topic, "sub-" + messageId, startTime);
 
         ConsumerConfiguration conf = new ConsumerConfiguration();
         long consumerCreateTimeStart = System.currentTimeMillis();
@@ -107,10 +111,12 @@ class ConsumeTopic implements Callable {
 }
 
 public class DumbPulsarTopicConsumeTest {
-    private static final Logger log = LoggerFactory.getLogger(ConsumeTopic.class);
+    private static final Logger log = LoggerFactory.getLogger(DumbPulsarTopicConsumeTest.class);
 
     public static void main(String[] args) throws ExecutionException, InterruptedException, MalformedURLException, PulsarClientException {
         CreateClients.setClients();
+
+        long startTime = System.currentTimeMillis();
 
         ExecutorService writeTopics = Executors.newFixedThreadPool(15);
         int numTopics = 10000;
@@ -130,7 +136,7 @@ public class DumbPulsarTopicConsumeTest {
 
         ExecutorService consumeTopics = Executors.newFixedThreadPool(15);
         for (int i = 0; i < numTopics; i++) {
-            futures.put(consumeTopics.submit(new ConsumeTopic(i)));
+            futures.put(consumeTopics.submit(new ConsumeTopic(i, startTime)));
         }
 
         runningTally = 0;
