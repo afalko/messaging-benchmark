@@ -30,6 +30,7 @@ import java.net.URL;
 import java.text.SimpleDateFormat;
 import java.util.Collections;
 import java.util.Date;
+import java.util.List;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
 
@@ -68,7 +69,7 @@ class WriteTopic implements Callable {
 
     @Override
     public Object call() throws Exception {
-        String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/ftopic-" + messageId;
+        String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/gtopic-" + messageId;
         try {
             adminClient.persistentTopics().delete(topic);
         } catch (PulsarAdminException.NotFoundException notFound) {
@@ -108,7 +109,12 @@ class ConsumeTopic implements Callable {
 
     @Override
     public Object call() throws Exception {
-        String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/ftopic-" + messageId;
+        String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/gtopic-" + messageId;
+
+        List<Message> messages = adminClient.persistentTopics().peekMessages(topic, "sub-" + messageId, 1);
+        if (messages.size() < 1) {
+            throw new RuntimeException("There are no messages to consume");
+        }
 
         ConsumerConfiguration conf = new ConsumerConfiguration();
         long consumerCreateTimeStart = System.currentTimeMillis();
@@ -233,6 +239,8 @@ public class DumbPulsarTopicConsumeTest {
 
         writeTopics.shutdown();
 
+        Thread.sleep(5000);
+
         ExecutorService consumeTopics = Executors.newFixedThreadPool(15);
         for (int i = 0; i < numTopics; i++) {
             consumerFutures.put(consumeTopics.submit(new ConsumeTopic(i, 0)));
@@ -241,11 +249,17 @@ public class DumbPulsarTopicConsumeTest {
         runningTally = 0;
         while (!consumerFutures.isEmpty()) {
             if (consumerFutures.peek().isDone()) {
+                Future fut = null;
                 try {
-                    consumerFutures.take().get();
+                    fut = consumerFutures.take();
+                    fut.get();
                 } catch (Exception e) {
+                    log.error("Got error...trying to kill threads...", e);
+                    if (fut != null) {
+                        fut.cancel(true);
+                    }
                     consumeTopics.awaitTermination(1, TimeUnit.SECONDS);
-                    throw e;
+                    continue;
                 }
                 runningTally++;
                 //log.info("Consumed from topic #{}", runningTally);
