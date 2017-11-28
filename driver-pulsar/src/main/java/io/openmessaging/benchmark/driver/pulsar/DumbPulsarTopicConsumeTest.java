@@ -27,8 +27,12 @@ import org.slf4j.LoggerFactory;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
-import java.util.concurrent.*;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 
 class CreateClients {
     static PulsarClient pulsarClient;
@@ -151,15 +155,35 @@ public class DumbPulsarTopicConsumeTest {
 
         long startTime = System.currentTimeMillis();
 
-        CreateClients.pulsarAdmin.namespaces().getNamespaces("prop-us-west-1a-noproxy/us-west-1a-noproxy/ns").forEach(ns -> {
+        final List<String> allTopics = new ArrayList();
+        CreateClients.pulsarAdmin.namespaces().getNamespaces("prop-us-west-1a-noproxy").forEach(ns -> {
             try {
-                log.info("All topics for ns {}: {}", ns, CreateClients.pulsarAdmin.persistentTopics().getList(ns));
+                //log.info("All topics for ns {}: {}", ns, CreateClients.pulsarAdmin.persistentTopics().getList(ns));
+                allTopics.addAll(CreateClients.pulsarAdmin.persistentTopics().getList(ns));
             } catch (PulsarAdminException e) {
                 log.error("Err", e);
             }
         });
 
-
+        ReaderConfiguration readerConfiguration = new ReaderConfiguration();
+        readerConfiguration.setReceiverQueueSize(1);
+        allTopics.forEach(topic -> {
+            Reader reader = null;
+            try {
+                reader = CreateClients.pulsarClient.createReader(topic, MessageId.earliest, readerConfiguration);
+            } catch (PulsarClientException e) {
+                log.error("Err", e);
+            }
+            assert reader != null;
+            while (!reader.hasReachedEndOfTopic()) {
+                try {
+                    Message message = reader.readNext();
+                    log.info("Message {}", message.getData());
+                } catch (PulsarClientException e) {
+                    log.error("Err", e);
+                }
+            }
+        });
         /*ExecutorService writeTopics = Executors.newFixedThreadPool(15);
         int runningTally = 0;
 
