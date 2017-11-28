@@ -20,6 +20,8 @@ package io.openmessaging.benchmark.driver.pulsar;
 
 import org.apache.pulsar.client.admin.PulsarAdmin;
 import org.apache.pulsar.client.api.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -45,6 +47,8 @@ class CreateClients {
 }
 
 class WriteTopic implements Callable {
+    private static final Logger log = LoggerFactory.getLogger(WriteTopic.class);
+
     private static final SimpleDateFormat formatter = new SimpleDateFormat("yyyyy-mm-dd hh:mm:ss");
 
     private final int messageId;
@@ -63,14 +67,16 @@ class WriteTopic implements Callable {
         adminClient.persistentTopics().createPartitionedTopic(topic, 1);
         Producer producer = client.createProducer(topic);
         producer.send(new byte[10]);
-        if (messageId % 1000 == 0) {
-            System.out.println(String.format("%s: Produced message %s", formatter.format(new Date()), messageId));
-        }
+        //if (messageId % 1000 == 0) {
+            log.info("{}: Produced message {}", formatter.format(new Date()), messageId);
+        //}
         return null;
     }
 }
 
 class ConsumeTopic implements Callable {
+    private static final Logger log = LoggerFactory.getLogger(ConsumeTopic.class);
+
     private final int messageId;
     private final PulsarClient client;
     private final PulsarAdmin adminClient;
@@ -93,14 +99,16 @@ class ConsumeTopic implements Callable {
         consumer.receive();
         long consumerReceiveTimeEnd = System.currentTimeMillis();
         if (messageId % 1000 == 0) {
-            System.out.println(String.format("Consumed message %s, took %s ms to subscribe, took %s ms to consume first message",
-                    messageId, consumerCreateTimeEnd - consumerCreateTimeStart, consumerReceiveTimeEnd - consumerCreateTimeEnd));
+            log.info("Consumed message {}, took {} ms to subscribe, took {} ms to consume first message",
+                    messageId, consumerCreateTimeEnd - consumerCreateTimeStart, consumerReceiveTimeEnd - consumerCreateTimeEnd);
         }
         return null;
     }
 }
 
 public class DumbPulsarTopicConsumeTest {
+    private static final Logger log = LoggerFactory.getLogger(ConsumeTopic.class);
+
     public static void main(String[] args) throws ExecutionException, InterruptedException, MalformedURLException, PulsarClientException {
         CreateClients.setClients();
 
@@ -110,9 +118,12 @@ public class DumbPulsarTopicConsumeTest {
         for (int i = 0; i < numTopics; i++) {
             futures.put(writeTopics.submit(new WriteTopic(i)));
         }
+        int runningTally = 0;
         while (!futures.isEmpty()) {
             if (futures.peek().isDone()) {
                 futures.remove();
+                runningTally++;
+                log.info("Created topic #{}", runningTally);
             }
         }
         writeTopics.shutdown();
@@ -122,9 +133,12 @@ public class DumbPulsarTopicConsumeTest {
             futures.put(consumeTopics.submit(new ConsumeTopic(i)));
         }
 
+        runningTally = 0;
         while (!futures.isEmpty()) {
             if (futures.peek().isDone()) {
                 futures.remove();
+                runningTally++;
+                log.info("Consumed from topic #{}", runningTally);
             }
         }
 
