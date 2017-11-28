@@ -19,6 +19,7 @@
 package io.openmessaging.benchmark.driver.pulsar;
 
 import org.apache.pulsar.client.admin.PulsarAdmin;
+import org.apache.pulsar.client.admin.PulsarAdminException;
 import org.apache.pulsar.client.api.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -67,7 +68,7 @@ class WriteTopic implements Callable {
         String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/btopic-" + messageId;
         adminClient.persistentTopics().createPartitionedTopic(topic, 1);
         Producer producer = client.createProducer(topic);
-        producer.send(new byte[10]);
+        producer.sendAsync(new byte[10]).thenApply(msgId -> messageId);
         if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
             log.info("{}: Produced message {}", formatter.format(new Date()), messageId);
         }
@@ -119,14 +120,25 @@ class ConsumeTopic implements Callable {
         ReaderConfiguration readerConfiguration = new ReaderConfiguration();
         readerConfiguration.setReceiverQueueSize(1);
         long consumerCreateTimeStart = System.currentTimeMillis();
+        readerConfiguration.setReaderListener((ReaderListener) (reader, msg) -> {
+            long consumerCreateTimeEnd = System.currentTimeMillis();
+            long consumerReceiveTimeEnd = System.currentTimeMillis();
+            if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
+                log.info("Consumed message {}, took {} ms to subscribe, took {} ms to consume first message",
+                        msg.getMessageId(), consumerCreateTimeEnd - consumerCreateTimeStart, consumerReceiveTimeEnd - consumerCreateTimeEnd);
+            }
+        });
         Reader reader = client.createReader(topic, MessageId.earliest, readerConfiguration);
-        long consumerCreateTimeEnd = System.currentTimeMillis();
-        Message message = reader.readNextAsync().get();
-        long consumerReceiveTimeEnd = System.currentTimeMillis();
+        while (!reader.hasReachedEndOfTopic()) {
+            reader.readNext();
+        }
+
+        //Message message = reader.readNextAsync().get();
+        /*long consumerReceiveTimeEnd = System.currentTimeMillis();
         if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
             log.info("Consumed message {}, took {} ms to subscribe, took {} ms to consume first message",
                     message.getMessageId(), consumerCreateTimeEnd - consumerCreateTimeStart, consumerReceiveTimeEnd - consumerCreateTimeEnd);
-        }
+        }*/
         return null;
     }
 }
@@ -134,32 +146,26 @@ class ConsumeTopic implements Callable {
 public class DumbPulsarTopicConsumeTest {
     private static final Logger log = LoggerFactory.getLogger(DumbPulsarTopicConsumeTest.class);
 
-    public static void main(String[] args) throws ExecutionException, InterruptedException, MalformedURLException, PulsarClientException {
+    public static void main(String[] args) throws ExecutionException, InterruptedException, MalformedURLException, PulsarClientException, PulsarAdminException {
         CreateClients.setClients();
 
         long startTime = System.currentTimeMillis();
 
-        ExecutorService writeTopics = Executors.newFixedThreadPool(15);
+        CreateClients.pulsarAdmin.namespaces().getNamespaces("prop-us-west-1a-noproxy/us-west-1a-noproxy/ns").forEach(ns -> {
+            try {
+                log.info("All topics for ns {}: {}", ns, CreateClients.pulsarAdmin.persistentTopics().getList(ns));
+            } catch (PulsarAdminException e) {
+                log.error("Err", e);
+            }
+        });
+
+
+        /*ExecutorService writeTopics = Executors.newFixedThreadPool(15);
         int runningTally = 0;
 
         int numTopics = 10;
 
         BlockingQueue<Future> consumerFutures = new ArrayBlockingQueue<>(10000);
-
-        ExecutorService consumeTopics = Executors.newFixedThreadPool(15);
-        for (int i = 0; i < numTopics; i++) {
-            consumerFutures.put(consumeTopics.submit(new ConsumeTopic(i, 0)));
-        }
-
-        /*runningTally = 0;
-        while (!futures.isEmpty()) {
-            if (futures.peek().isDone()) {
-                futures.remove();
-                runningTally++;
-                //log.info("Consumed from topic #{}", runningTally);
-            }
-        }*/
-        Thread.sleep(5000);
 
         BlockingQueue<Future> writeFutures = new ArrayBlockingQueue<>(10000);
         runningTally = 0;
@@ -176,7 +182,20 @@ public class DumbPulsarTopicConsumeTest {
 
         writeTopics.shutdown();
 
+        ExecutorService consumeTopics = Executors.newFixedThreadPool(15);
+        for (int i = 0; i < numTopics; i++) {
+            consumerFutures.put(consumeTopics.submit(new ConsumeTopic(i, 0)));
+        }
 
-        consumeTopics.shutdown();
+        runningTally = 0;
+        while (!consumerFutures.isEmpty()) {
+            if (consumerFutures.peek().isDone()) {
+                consumerFutures.remove();
+                runningTally++;
+                //log.info("Consumed from topic #{}", runningTally);
+            }
+        }
+
+        consumeTopics.shutdown();*/
     }
 }
