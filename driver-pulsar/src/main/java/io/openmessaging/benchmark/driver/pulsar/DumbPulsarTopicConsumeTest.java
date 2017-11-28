@@ -83,9 +83,6 @@ class WriteTopic implements Callable {
         if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
             log.info("{}: Produced message {}", formatter.format(new Date()), messageId);
         }
-        // The only way to know that we are at the end of message is to terminate the topic
-        Future terminateCall = adminClient.persistentTopics().terminateTopicAsync(topic);
-        terminateCall.get();
         producer.close();
         return null;
     }
@@ -138,6 +135,9 @@ class ConsumeTopic implements Callable {
             }
             numMessages++;
             consumer.acknowledge(message);
+            // The only way to know that we are at the end of message is to terminate the topic
+            Future terminateCall = adminClient.persistentTopics().terminateTopicAsync(topic);
+            terminateCall.get();
             break;
         }
         long consumerReceiveTimeEnd = System.currentTimeMillis();
