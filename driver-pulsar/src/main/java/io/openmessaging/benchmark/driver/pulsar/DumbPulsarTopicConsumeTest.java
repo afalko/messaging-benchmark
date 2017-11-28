@@ -32,6 +32,7 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 class CreateClients {
@@ -53,7 +54,7 @@ class CreateClients {
 
 class WriteTopic implements Callable {
     private static final Logger log = LoggerFactory.getLogger(WriteTopic.class);
-    private static final int PRINT_EVERY_NTH_MESSAGE = 1;
+    private static final int PRINT_EVERY_NTH_MESSAGE = 1000;
 
     private static final SimpleDateFormat formatter = new SimpleDateFormat("yyyyy-mm-dd hh:mm:ss");
 
@@ -69,7 +70,7 @@ class WriteTopic implements Callable {
 
     @Override
     public Object call() throws Exception {
-        String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/gtopic-" + messageId;
+        String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/htopic-" + messageId;
         try {
             adminClient.persistentTopics().delete(topic);
         } catch (PulsarAdminException.NotFoundException notFound) {
@@ -106,23 +107,26 @@ class ConsumeTopic implements Callable {
 
     @Override
     public Object call() throws Exception {
-        String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/gtopic-" + messageId;
-
-        List<Message> messages = adminClient.persistentTopics().peekMessages(topic, "sub-" + messageId, 1);
-        if (messages.size() < 1) {
-            throw new RuntimeException("There are no messages to consume");
-        }
+        String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/htopic-" + messageId;
 
         ConsumerConfiguration conf = new ConsumerConfiguration();
         long consumerCreateTimeStart = System.currentTimeMillis();
         conf.setSubscriptionType(SubscriptionType.Exclusive);
         Consumer consumer = client.subscribe(topic, "sub-" + messageId, conf);
         adminClient.persistentTopics().resetCursor(topic, "sub-" + messageId, 0);
-
         long consumerCreateTimeEnd = System.currentTimeMillis();
-        int numMessages = 0;
-        while (!consumer.hasReachedEndOfTopic()) {
-            Message message = consumer.receive(100, TimeUnit.MILLISECONDS);
+
+        long peekTimeStart = System.currentTimeMillis();
+        List<Message> messages = adminClient.persistentTopics().peekMessages(topic, "sub-" + messageId, 1);
+        if (messages.size() < 1) {
+            throw new RuntimeException("There are no messages to consume");
+        }
+        long peekTimeEnd = System.currentTimeMillis();
+
+        Message message = null;
+        AtomicInteger numMessages = new AtomicInteger(0);
+        while (numMessages.get() < 3) {
+            message = consumer.receive(100, TimeUnit.MILLISECONDS);
             if (message == null) {
                 log.warn("Got null message, expected at least 1 message. Stats: \n" +
                                 "\tLedger entries -> {}\n" +
@@ -133,23 +137,28 @@ class ConsumeTopic implements Callable {
                                 .collect(Collectors.joining(", ")));
                 continue;
             }
-            numMessages++;
+            numMessages.incrementAndGet();
             consumer.acknowledge(message);
             // The only way to know that we are at the end of message is to terminate the topic
-            Future terminateCall = adminClient.persistentTopics().terminateTopicAsync(topic);
-            terminateCall.get();
+            //Future terminateCall = adminClient.persistentTopics().terminateTopicAsync(topic);
+            //terminateCall.get();
             break;
         }
         long consumerReceiveTimeEnd = System.currentTimeMillis();
-        if (numMessages < 1) {
+        if (numMessages.get() < 1) {
             consumer.unsubscribe();
             consumer.close();
             throw new RuntimeException("No messages consumed");
         }
+        if (message.getData() == null && (int) message.getData()[0] != messageId) {
+            throw new RuntimeException("Invalid message");
+        }
         if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
-            log.info("Consumed message {}, took {} ms to subscribe, took {} ms to consume {} messages",
-                    messageId, consumerCreateTimeEnd - consumerCreateTimeStart,
-                    consumerReceiveTimeEnd - consumerCreateTimeEnd, numMessages);
+            log.info("Consumed message {}, took {} ms to subscribe, " +
+                            "took {} ms to peek 1 msg, " +
+                            "took {} ms to consume {} messages",
+                    messageId, consumerCreateTimeEnd - consumerCreateTimeStart, peekTimeEnd - peekTimeStart,
+                    consumerReceiveTimeEnd - peekTimeEnd, numMessages);
         }
         consumer.unsubscribe();
         consumer.close();
@@ -220,7 +229,7 @@ public class DumbPulsarTopicConsumeTest {
         ExecutorService writeTopics = Executors.newFixedThreadPool(15);
         int runningTally = 0;
 
-        int numTopics = 1;
+        int numTopics = 1000000;
 
         BlockingQueue<Future> consumerFutures = new ArrayBlockingQueue<>(10000);
 
