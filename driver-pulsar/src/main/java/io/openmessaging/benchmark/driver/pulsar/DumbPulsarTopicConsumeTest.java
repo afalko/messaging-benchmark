@@ -27,12 +27,9 @@ import org.slf4j.LoggerFactory;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
 import java.util.Date;
-import java.util.List;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
+import java.util.stream.Collectors;
 
 class CreateClients {
     static PulsarClient pulsarClient;
@@ -53,7 +50,7 @@ class CreateClients {
 
 class WriteTopic implements Callable {
     private static final Logger log = LoggerFactory.getLogger(WriteTopic.class);
-    private static final int PRINT_EVERY_NTH_MESSAGE = 1;
+    private static final int PRINT_EVERY_NTH_MESSAGE = 1000;
 
     private static final SimpleDateFormat formatter = new SimpleDateFormat("yyyyy-mm-dd hh:mm:ss");
 
@@ -69,14 +66,22 @@ class WriteTopic implements Callable {
 
     @Override
     public Object call() throws Exception {
-        String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/btopic-" + messageId;
-        adminClient.persistentTopics().createPartitionedTopic(topic, 1);
+        String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/etopic-" + messageId;
+        try {
+            adminClient.persistentTopics().delete(topic);
+        } catch (PulsarAdminException.NotFoundException notFound) {
+            // nop
+        }
+        //adminClient.persistentTopics().createPartitionedTopic(topic, 2);
         Producer producer = client.createProducer(topic);
-        producer.sendAsync(new byte[10]).thenApply(msgId -> messageId);
+        producer.send(new byte[10]);
         if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
             log.info("{}: Produced message {}", formatter.format(new Date()), messageId);
         }
-        producer.closeAsync();
+        // The only way to know that we are at the end of message is to terminate the topic
+        Future terminateCall = adminClient.persistentTopics().terminateTopicAsync(topic);
+        terminateCall.get();
+        producer.close();
         return null;
     }
 }
@@ -99,29 +104,47 @@ class ConsumeTopic implements Callable {
 
     @Override
     public Object call() throws Exception {
-        String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/btopic-" + messageId;
-
-        //adminClient.persistentTopics().resetCursor(topic, "sub-" + messageId, startTime);
+        String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/etopic-" + messageId;
 
         ConsumerConfiguration conf = new ConsumerConfiguration();
-        /*long consumerCreateTimeStart = System.currentTimeMillis();
-        conf.setSubscriptionType(SubscriptionType.Exclusive);
+        long consumerCreateTimeStart = System.currentTimeMillis();
+        conf.setSubscriptionType(SubscriptionType.Failover);
         Consumer consumer = client.subscribe(topic, "sub-" + messageId, conf);
+        adminClient.persistentTopics().resetCursor(topic, "sub-" + messageId, 0);
 
         long consumerCreateTimeEnd = System.currentTimeMillis();
+        int numMessages = 0;
         try {
-            Message message = consumer.receive(60, TimeUnit.SECONDS);
-            //consumer.acknowledgeCumulative(message);
+            Message message = null;
+            while (!consumer.hasReachedEndOfTopic()) {
+                message = consumer.receive(100, TimeUnit.MILLISECONDS);
+                if (message == null) {
+                    log.warn("Got null message, expected at least 1 message. Stats: \n" +
+                                    "\tLedger entries -> {}\n" +
+                                    "\tcursorMap -> {}\n",
+                            adminClient.persistentTopics().getInternalStats(topic).currentLedgerEntries,
+                            adminClient.persistentTopics().getInternalStats(topic).cursors.values().stream()
+                                    .map(stats -> String.format("State: %s", stats.state))
+                                    .collect(Collectors.joining(", ")));
+                }
+                numMessages++;
+                consumer.acknowledge(message);
+            }
         } catch (PulsarClientException e) {
+            if (e.getMessage().contains("test")) {
+                log.info("No messages remaining in topic {}", topic);
+                consumer.unsubscribe();
+            }
             log.error("Error on message: " + messageId, e);
+            throw e;
         }
         long consumerReceiveTimeEnd = System.currentTimeMillis();
         if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
             log.info("Consumed message {}, took {} ms to subscribe, took {} ms to consume first message",
                     messageId, consumerCreateTimeEnd - consumerCreateTimeStart, consumerReceiveTimeEnd - consumerCreateTimeEnd);
         }
-        return null;*/
-        ReaderConfiguration readerConfiguration = new ReaderConfiguration();
+        return null;
+        /*ReaderConfiguration readerConfiguration = new ReaderConfiguration();
         readerConfiguration.setReceiverQueueSize(1);
         long consumerCreateTimeStart = System.currentTimeMillis();
         readerConfiguration.setReaderListener((ReaderListener) (reader, msg) -> {
@@ -142,20 +165,20 @@ class ConsumeTopic implements Callable {
         if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
             log.info("Consumed message {}, took {} ms to subscribe, took {} ms to consume first message",
                     message.getMessageId(), consumerCreateTimeEnd - consumerCreateTimeStart, consumerReceiveTimeEnd - consumerCreateTimeEnd);
-        }*/
-        return null;
+        }
+        return null;*/
     }
 }
 
 public class DumbPulsarTopicConsumeTest {
     private static final Logger log = LoggerFactory.getLogger(DumbPulsarTopicConsumeTest.class);
 
-    public static void main(String[] args) throws ExecutionException, InterruptedException, MalformedURLException, PulsarClientException, PulsarAdminException {
+    public static void main(String[] args) throws ExecutionException, InterruptedException, MalformedURLException, PulsarClientException {
         CreateClients.setClients();
 
         long startTime = System.currentTimeMillis();
 
-        final List<String> allTopics = new ArrayList();
+        /*final List<String> allTopics = new ArrayList();
         CreateClients.pulsarAdmin.namespaces().getNamespaces("prop-us-west-1a-noproxy").forEach(ns -> {
             try {
                 //log.info("All topics for ns {}: {}", ns, CreateClients.pulsarAdmin.persistentTopics().getList(ns));
@@ -175,7 +198,7 @@ public class DumbPulsarTopicConsumeTest {
                 log.error("Err", e);
             }
             assert reader != null;
-            while (!reader.hasReachedEndOfTopic()) {
+            while (!CreateClients.pulsarAdmin.persistentTopics().getInternalStats(t).) {
                 try {
                     Message message = reader.readNext();
                     log.info("Message {}", message.getData());
@@ -183,8 +206,8 @@ public class DumbPulsarTopicConsumeTest {
                     log.error("Err", e);
                 }
             }
-        });
-        /*ExecutorService writeTopics = Executors.newFixedThreadPool(15);
+        });*/
+        ExecutorService writeTopics = Executors.newFixedThreadPool(15);
         int runningTally = 0;
 
         int numTopics = 10;
@@ -198,7 +221,7 @@ public class DumbPulsarTopicConsumeTest {
         }
         while (!writeFutures.isEmpty()) {
             if (writeFutures.peek().isDone()) {
-                writeFutures.remove();
+                writeFutures.take().get();
                 runningTally++;
                 log.info("Created topic #{}", runningTally);
             }
@@ -214,12 +237,12 @@ public class DumbPulsarTopicConsumeTest {
         runningTally = 0;
         while (!consumerFutures.isEmpty()) {
             if (consumerFutures.peek().isDone()) {
-                consumerFutures.remove();
+                consumerFutures.take().get();
                 runningTally++;
                 //log.info("Consumed from topic #{}", runningTally);
             }
         }
 
-        consumeTopics.shutdown();*/
+        consumeTopics.shutdown();
     }
 }
