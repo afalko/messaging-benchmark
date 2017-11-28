@@ -21,8 +21,8 @@ class CreateClients {
         // Disable internal stats since we're already collecting in the framework
         clientConfiguration.setStatsInterval(0, TimeUnit.SECONDS);
 
-        pulsarClient = PulsarClient.create("pulsar://localhost:6650", clientConfiguration);
-        pulsarAdmin = new PulsarAdmin(new URL("http://localhost:8080"), clientConfiguration);
+        pulsarClient = PulsarClient.create("pulsar://broker:6650", clientConfiguration);
+        pulsarAdmin = new PulsarAdmin(new URL("http://broker:8080"), clientConfiguration);
     }
 }
 
