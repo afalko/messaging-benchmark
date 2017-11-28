@@ -48,6 +48,7 @@ class CreateClients {
 
 class WriteTopic implements Callable {
     private static final Logger log = LoggerFactory.getLogger(WriteTopic.class);
+    private static final int PRINT_EVERY_NTH_MESSAGE = 1;
 
     private static final SimpleDateFormat formatter = new SimpleDateFormat("yyyyy-mm-dd hh:mm:ss");
 
@@ -63,19 +64,21 @@ class WriteTopic implements Callable {
 
     @Override
     public Object call() throws Exception {
-        String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/topic-" + messageId;
+        String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/btopic-" + messageId;
         adminClient.persistentTopics().createPartitionedTopic(topic, 1);
         Producer producer = client.createProducer(topic);
         producer.send(new byte[10]);
-        if (messageId % 1000 == 0) {
+        if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
             log.info("{}: Produced message {}", formatter.format(new Date()), messageId);
         }
+        producer.closeAsync();
         return null;
     }
 }
 
 class ConsumeTopic implements Callable {
     private static final Logger log = LoggerFactory.getLogger(ConsumeTopic.class);
+    private static final int PRINT_EVERY_NTH_MESSAGE = 1;
 
     private final int messageId;
     private final long startTime;
@@ -91,20 +94,38 @@ class ConsumeTopic implements Callable {
 
     @Override
     public Object call() throws Exception {
-        String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/topic-" + messageId;
+        String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/btopic-" + messageId;
 
-        adminClient.persistentTopics().resetCursor(topic, "sub-" + messageId, startTime);
+        //adminClient.persistentTopics().resetCursor(topic, "sub-" + messageId, startTime);
 
         ConsumerConfiguration conf = new ConsumerConfiguration();
-        long consumerCreateTimeStart = System.currentTimeMillis();
-        conf.setSubscriptionType(SubscriptionType.Failover);
+        /*long consumerCreateTimeStart = System.currentTimeMillis();
+        conf.setSubscriptionType(SubscriptionType.Exclusive);
         Consumer consumer = client.subscribe(topic, "sub-" + messageId, conf);
+
         long consumerCreateTimeEnd = System.currentTimeMillis();
-        consumer.receive();
+        try {
+            Message message = consumer.receive(60, TimeUnit.SECONDS);
+            //consumer.acknowledgeCumulative(message);
+        } catch (PulsarClientException e) {
+            log.error("Error on message: " + messageId, e);
+        }
         long consumerReceiveTimeEnd = System.currentTimeMillis();
-        if (messageId % 1000 == 0) {
+        if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
             log.info("Consumed message {}, took {} ms to subscribe, took {} ms to consume first message",
                     messageId, consumerCreateTimeEnd - consumerCreateTimeStart, consumerReceiveTimeEnd - consumerCreateTimeEnd);
+        }
+        return null;*/
+        ReaderConfiguration readerConfiguration = new ReaderConfiguration();
+        readerConfiguration.setReceiverQueueSize(1);
+        long consumerCreateTimeStart = System.currentTimeMillis();
+        Reader reader = client.createReader(topic, MessageId.earliest, readerConfiguration);
+        long consumerCreateTimeEnd = System.currentTimeMillis();
+        Message message = reader.readNextAsync().get();
+        long consumerReceiveTimeEnd = System.currentTimeMillis();
+        if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
+            log.info("Consumed message {}, took {} ms to subscribe, took {} ms to consume first message",
+                    message.getMessageId(), consumerCreateTimeEnd - consumerCreateTimeStart, consumerReceiveTimeEnd - consumerCreateTimeEnd);
         }
         return null;
     }
@@ -119,34 +140,42 @@ public class DumbPulsarTopicConsumeTest {
         long startTime = System.currentTimeMillis();
 
         ExecutorService writeTopics = Executors.newFixedThreadPool(15);
-        int numTopics = 10000;
-        BlockingQueue<Future> futures = new ArrayBlockingQueue<>(10000);
-        for (int i = 0; i < numTopics; i++) {
-            futures.put(writeTopics.submit(new WriteTopic(i)));
-        }
         int runningTally = 0;
+
+        int numTopics = 10;
+
+        BlockingQueue<Future> consumerFutures = new ArrayBlockingQueue<>(10000);
+
+        ExecutorService consumeTopics = Executors.newFixedThreadPool(15);
+        for (int i = 0; i < numTopics; i++) {
+            consumerFutures.put(consumeTopics.submit(new ConsumeTopic(i, 0)));
+        }
+
+        /*runningTally = 0;
         while (!futures.isEmpty()) {
             if (futures.peek().isDone()) {
                 futures.remove();
+                runningTally++;
+                //log.info("Consumed from topic #{}", runningTally);
+            }
+        }*/
+        Thread.sleep(5000);
+
+        BlockingQueue<Future> writeFutures = new ArrayBlockingQueue<>(10000);
+        runningTally = 0;
+        for (int i = 0; i < numTopics; i++) {
+            writeFutures.put(writeTopics.submit(new WriteTopic(i)));
+        }
+        while (!writeFutures.isEmpty()) {
+            if (writeFutures.peek().isDone()) {
+                writeFutures.remove();
                 runningTally++;
                 log.info("Created topic #{}", runningTally);
             }
         }
+
         writeTopics.shutdown();
 
-        ExecutorService consumeTopics = Executors.newFixedThreadPool(15);
-        for (int i = 0; i < numTopics; i++) {
-            futures.put(consumeTopics.submit(new ConsumeTopic(i, startTime)));
-        }
-
-        runningTally = 0;
-        while (!futures.isEmpty()) {
-            if (futures.peek().isDone()) {
-                futures.remove();
-                runningTally++;
-                log.info("Consumed from topic #{}", runningTally);
-            }
-        }
 
         consumeTopics.shutdown();
     }

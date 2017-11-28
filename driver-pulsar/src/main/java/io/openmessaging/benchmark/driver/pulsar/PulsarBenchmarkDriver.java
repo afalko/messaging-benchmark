@@ -97,7 +97,9 @@ public class PulsarBenchmarkDriver implements BenchmarkDriver {
         PersistentTopics persistentTopics = adminClient.persistentTopics();
         // Ignore messages from previous tests
         try {
-            persistentTopics.resetCursor(topic, subscriptionName, System.currentTimeMillis());
+            if (persistentTopics.getPartitionedTopicMetadata(topic).partitions > 0) {
+                persistentTopics.resetCursor(topic, subscriptionName, System.currentTimeMillis());
+            }
         } catch (PulsarAdminException e) {
             throw new RuntimeException(e);
         }
