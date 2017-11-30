@@ -6,6 +6,7 @@ connect.
 
 Example: ~/.ssh/terraform.pub
 DESCRIPTION
+  path = 
 }
 
 variable "key_name" {

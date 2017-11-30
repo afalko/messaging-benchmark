@@ -59,18 +59,20 @@ class WriteTopic implements Callable {
     private static final SimpleDateFormat formatter = new SimpleDateFormat("yyyyy-mm-dd hh:mm:ss");
 
     private final int messageId;
+    private final String key;
     private final PulsarClient client;
     private final PulsarAdmin adminClient;
 
-    public WriteTopic(int messageId) throws PulsarClientException, MalformedURLException {
+    public WriteTopic(int messageId, String key) throws PulsarClientException, MalformedURLException {
         this.messageId = messageId;
+        this.key = key;
         client = CreateClients.pulsarClient;
         adminClient = CreateClients.pulsarAdmin;
     }
 
     @Override
     public Object call() throws Exception {
-        String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/htopic-" + messageId;
+        String topic = String.format("persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/%s-topic-%s", key, messageId);
         try {
             adminClient.persistentTopics().delete(topic);
         } catch (PulsarAdminException.NotFoundException notFound) {
@@ -95,19 +97,21 @@ class ConsumeTopic implements Callable {
 
     private final int messageId;
     private final long startTime;
+    private final String key;
     private final PulsarClient client;
     private final PulsarAdmin adminClient;
 
-    public ConsumeTopic(int messageId, long startTime) throws PulsarClientException, MalformedURLException {
+    public ConsumeTopic(int messageId, long startTime, String key) throws PulsarClientException, MalformedURLException {
         this.messageId = messageId;
         this.startTime = startTime;
+        this.key = key;
         client = CreateClients.pulsarClient;
         adminClient = CreateClients.pulsarAdmin;
     }
 
     @Override
     public Object call() throws Exception {
-        String topic = "persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/htopic-" + messageId;
+        String topic = String.format("persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/%s-topic-%s", key, messageId);
 
         ConsumerConfiguration conf = new ConsumerConfiguration();
         long consumerCreateTimeStart = System.currentTimeMillis();
@@ -226,15 +230,21 @@ public class DumbPulsarTopicConsumeTest {
                 }
             }
         });*/
+
+        String key = "";
+        if (args.length > 1) {
+            log.info("Arg passed: {}", args[0]);
+            key = args[0];
+        }
         ExecutorService writeTopics = Executors.newFixedThreadPool(15);
-        int numTopics = 1000000;
+        int numTopics = 200;
 
-        BlockingQueue<Future> consumerFutures = new ArrayBlockingQueue<>(10000);
+        BlockingQueue<Future> consumerFutures = new ArrayBlockingQueue<>(100);
 
-        BlockingQueue<Future> writeFutures = new ArrayBlockingQueue<>(10000);
+        BlockingQueue<Future> writeFutures = new ArrayBlockingQueue<>(100);
         for (int i = 0; i < numTopics; i++) {
-            writeFutures.put(writeTopics.submit(new WriteTopic(i)));
-            if (writeFutures.size() >= 10000) {
+            writeFutures.put(writeTopics.submit(new WriteTopic(i, key)));
+            if (writeFutures.size() >= 100) {
                 log.info("Produced 10k topics, ensuring success before proceeding...");
                 clearQueue(writeFutures);
             }
@@ -247,8 +257,8 @@ public class DumbPulsarTopicConsumeTest {
 
         ExecutorService consumeTopics = Executors.newFixedThreadPool(15);
         for (int i = 0; i < numTopics; i++) {
-            consumerFutures.put(consumeTopics.submit(new ConsumeTopic(i, 0)));
-            if (consumerFutures.size() >= 10000) {
+            consumerFutures.put(consumeTopics.submit(new ConsumeTopic(i, 0, key)));
+            if (consumerFutures.size() >= 100) {
                 clearQueue(consumerFutures);
             }
         }
