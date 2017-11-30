@@ -25,6 +25,7 @@ import org.apache.pulsar.client.api.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.math.BigInteger;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.text.SimpleDateFormat;
@@ -52,7 +53,7 @@ class CreateClients {
     }
 }
 
-class WriteTopic implements Callable {
+class WriteTopic implements Callable<Exception> {
     private static final Logger log = LoggerFactory.getLogger(WriteTopic.class);
     private static final int PRINT_EVERY_NTH_MESSAGE = 1000;
 
@@ -71,27 +72,31 @@ class WriteTopic implements Callable {
     }
 
     @Override
-    public Object call() throws Exception {
-        String topic = String.format("persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/%s-topic-%s", key, messageId);
+    public Exception call() throws Exception {
         try {
-            adminClient.persistentTopics().delete(topic);
-        } catch (PulsarAdminException.NotFoundException notFound) {
-            // nop
+            String topic = String.format("persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/%s-topic-%s", key, messageId);
+            try {
+                adminClient.persistentTopics().delete(topic);
+            } catch (PulsarAdminException.NotFoundException notFound) {
+                // nop
+            }
+            //adminClient.persistentTopics().createPartitionedTopic(topic, 2);
+            Producer producer = client.createProducer(topic);
+            producer.send(Bytes.toArray(Collections.singleton(messageId)));
+            producer.send(Bytes.toArray(Collections.singleton(messageId)));
+            producer.send(Bytes.toArray(Collections.singleton(messageId)));
+            if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
+                log.info("{}: Produced message {}", formatter.format(new Date()), messageId);
+            }
+            producer.close();
+            return null;
+        } catch (Exception e) {
+            return e;
         }
-        //adminClient.persistentTopics().createPartitionedTopic(topic, 2);
-        Producer producer = client.createProducer(topic);
-        producer.send(Bytes.toArray(Collections.singleton(messageId)));
-        producer.send(Bytes.toArray(Collections.singleton(messageId)));
-        producer.send(Bytes.toArray(Collections.singleton(messageId)));
-        if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
-            log.info("{}: Produced message {}", formatter.format(new Date()), messageId);
-        }
-        producer.close();
-        return null;
     }
 }
 
-class ConsumeTopic implements Callable {
+class ConsumeTopic implements Callable<Exception> {
     private static final Logger log = LoggerFactory.getLogger(ConsumeTopic.class);
     private static final int PRINT_EVERY_NTH_MESSAGE = 1;
 
@@ -110,86 +115,60 @@ class ConsumeTopic implements Callable {
     }
 
     @Override
-    public Object call() throws Exception {
-        String topic = String.format("persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/%s-topic-%s", key, messageId);
+    public Exception call() throws Exception {
+        try {
+            String topic = String.format("persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/%s-topic-%s", key, messageId);
 
-        ConsumerConfiguration conf = new ConsumerConfiguration();
-        long consumerCreateTimeStart = System.currentTimeMillis();
-        conf.setSubscriptionType(SubscriptionType.Exclusive);
-        Consumer consumer = client.subscribe(topic, "sub-" + messageId, conf);
-        adminClient.persistentTopics().resetCursor(topic, "sub-" + messageId, 0);
-        long consumerCreateTimeEnd = System.currentTimeMillis();
-
-        long peekTimeStart = System.currentTimeMillis();
-        List<Message> messages = adminClient.persistentTopics().peekMessages(topic, "sub-" + messageId, 1);
-        if (messages.size() < 1) {
-            throw new RuntimeException("There are no messages to consume");
-        }
-        long peekTimeEnd = System.currentTimeMillis();
-
-        Message message = null;
-        AtomicInteger numMessages = new AtomicInteger(0);
-        while (numMessages.get() < 3) {
-            message = consumer.receive(100, TimeUnit.MILLISECONDS);
-            if (message == null) {
-                log.warn("Got null message, expected at least 1 message. Stats: \n" +
-                                "\tLedger entries -> {}\n" +
-                                "\tcursorMap -> {}\n",
-                        adminClient.persistentTopics().getInternalStats(topic).currentLedgerEntries,
-                        adminClient.persistentTopics().getInternalStats(topic).cursors.values().stream()
-                                .map(stats -> String.format("State: %s", stats.state))
-                                .collect(Collectors.joining(", ")));
-                continue;
-            }
-            numMessages.incrementAndGet();
-            consumer.acknowledge(message);
-            // The only way to know that we are at the end of message is to terminate the topic
-            //Future terminateCall = adminClient.persistentTopics().terminateTopicAsync(topic);
-            //terminateCall.get();
-            break;
-        }
-        long consumerReceiveTimeEnd = System.currentTimeMillis();
-        if (numMessages.get() < 1) {
-            consumer.unsubscribe();
-            consumer.close();
-            throw new RuntimeException("No messages consumed");
-        }
-        if (message.getData() == null && (int) message.getData()[0] != messageId) {
-            throw new RuntimeException("Invalid message");
-        }
-        if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
-            log.info("Consumed message {}, took {} ms to subscribe, " +
-                            "took {} ms to peek 1 msg, " +
-                            "took {} ms to consume {} messages",
-                    messageId, consumerCreateTimeEnd - consumerCreateTimeStart, peekTimeEnd - peekTimeStart,
-                    consumerReceiveTimeEnd - peekTimeEnd, numMessages);
-        }
-        consumer.unsubscribe();
-        consumer.close();
-        return null;
-        /*ReaderConfiguration readerConfiguration = new ReaderConfiguration();
-        readerConfiguration.setReceiverQueueSize(1);
-        long consumerCreateTimeStart = System.currentTimeMillis();
-        readerConfiguration.setReaderListener((ReaderListener) (reader, msg) -> {
+            ConsumerConfiguration conf = new ConsumerConfiguration();
+            long consumerCreateTimeStart = System.currentTimeMillis();
+            conf.setSubscriptionType(SubscriptionType.Exclusive);
+            Consumer consumer = client.subscribe(topic, "sub-" + messageId, conf);
+            adminClient.persistentTopics().resetCursor(topic, "sub-" + messageId, 0);
             long consumerCreateTimeEnd = System.currentTimeMillis();
-            long consumerReceiveTimeEnd = System.currentTimeMillis();
-            if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
-                log.info("Consumed message {}, took {} ms to subscribe, took {} ms to consume first message",
-                        msg.getMessageId(), consumerCreateTimeEnd - consumerCreateTimeStart, consumerReceiveTimeEnd - consumerCreateTimeEnd);
+
+            long peekTimeStart = System.currentTimeMillis();
+            List<Message> messages = adminClient.persistentTopics().peekMessages(topic, "sub-" + messageId, 1);
+            if (messages.size() < 1) {
+                throw new RuntimeException("There are no messages to consume");
             }
-        });
-        Reader reader = client.createReader(topic, MessageId.earliest, readerConfiguration);
-        while (!reader.hasReachedEndOfTopic()) {
-            reader.readNext();
+            long peekTimeEnd = System.currentTimeMillis();
+
+            while (true) {
+                AtomicInteger numMessages = new AtomicInteger(0);
+                adminClient.persistentTopics().resetCursor(topic, "sub-" + messageId, 0);
+                Thread.sleep(1000);
+                long consumerReceiveTimeStart = System.currentTimeMillis();
+
+                Message message = consumer.receive(100, TimeUnit.MILLISECONDS);
+                if (message == null) {
+                    log.warn("Got null message, expected at least 1 message. Stats: \n" +
+                                    "\tLedger entries -> {}\n" +
+                                    "\tcursorMap -> {}\n",
+                            adminClient.persistentTopics().getInternalStats(topic).currentLedgerEntries,
+                            adminClient.persistentTopics().getInternalStats(topic).cursors.values().stream()
+                                    .map(stats -> String.format("State: %s", stats.state))
+                                    .collect(Collectors.joining(", ")));
+                    continue;
+                }
+                numMessages.incrementAndGet();
+                consumer.acknowledge(message);
+
+                long consumerReceiveTimeEnd = System.currentTimeMillis();
+                if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
+                    log.info("Consumed message {}, took {} ms to subscribe, " +
+                                    "took {} ms to peek 1 msg, " +
+                                    "took {} ms to consume {} messages",
+                            new BigInteger(message.getData()).intValue(),
+                            consumerCreateTimeEnd - consumerCreateTimeStart,
+                            peekTimeEnd - peekTimeStart,
+                            consumerReceiveTimeEnd - consumerReceiveTimeStart, numMessages);
+                    Thread.sleep(1000);
+                }
+            }
+        } catch (Exception e) {
+            return new Exception("Failed on message id " + messageId, e);
         }
 
-        //Message message = reader.readNextAsync().get();
-        /*long consumerReceiveTimeEnd = System.currentTimeMillis();
-        if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
-            log.info("Consumed message {}, took {} ms to subscribe, took {} ms to consume first message",
-                    message.getMessageId(), consumerCreateTimeEnd - consumerCreateTimeStart, consumerReceiveTimeEnd - consumerCreateTimeEnd);
-        }
-        return null;*/
     }
 }
 
@@ -199,49 +178,21 @@ public class DumbPulsarTopicConsumeTest {
     public static void main(String[] args) throws ExecutionException, InterruptedException, MalformedURLException, PulsarClientException {
         CreateClients.setClients();
 
-        long startTime = System.currentTimeMillis();
-
-        /*final List<String> allTopics = new ArrayList();
-        CreateClients.pulsarAdmin.namespaces().getNamespaces("prop-us-west-1a-noproxy").forEach(ns -> {
-            try {
-                //log.info("All topics for ns {}: {}", ns, CreateClients.pulsarAdmin.persistentTopics().getList(ns));
-                allTopics.addAll(CreateClients.pulsarAdmin.persistentTopics().getList(ns));
-            } catch (PulsarAdminException e) {
-                log.error("Err", e);
-            }
-        });
-
-        ReaderConfiguration readerConfiguration = new ReaderConfiguration();
-        readerConfiguration.setReceiverQueueSize(1);
-        allTopics.forEach(topic -> {
-            Reader reader = null;
-            try {
-                reader = CreateClients.pulsarClient.createReader(topic, MessageId.earliest, readerConfiguration);
-            } catch (PulsarClientException e) {
-                log.error("Err", e);
-            }
-            assert reader != null;
-            while (!CreateClients.pulsarAdmin.persistentTopics().getInternalStats(t).) {
-                try {
-                    Message message = reader.readNext();
-                    log.info("Message {}", message.getData());
-                } catch (PulsarClientException e) {
-                    log.error("Err", e);
-                }
-            }
-        });*/
-
-        String key = "";
-        if (args.length > 1) {
+        String key = "default";
+        Integer numConcurrentConsumers = 15;
+        if (args.length >= 1) {
             log.info("Arg passed: {}", args[0]);
             key = args[0];
+            if (args.length >= 2) {
+                numConcurrentConsumers = Integer.valueOf(args[1]);
+            }
         }
         ExecutorService writeTopics = Executors.newFixedThreadPool(15);
         int numTopics = 200;
 
-        BlockingQueue<Future> consumerFutures = new ArrayBlockingQueue<>(100);
+        BlockingQueue<Future<Exception>> consumerFutures = new ArrayBlockingQueue<>(100);
 
-        BlockingQueue<Future> writeFutures = new ArrayBlockingQueue<>(100);
+        BlockingQueue<Future<Exception>> writeFutures = new ArrayBlockingQueue<>(100);
         for (int i = 0; i < numTopics; i++) {
             writeFutures.put(writeTopics.submit(new WriteTopic(i, key)));
             if (writeFutures.size() >= 100) {
@@ -253,9 +204,10 @@ public class DumbPulsarTopicConsumeTest {
 
         writeTopics.shutdown();
 
+        log.info("Finished producing topics; starting consumers after 5 seconds");
         Thread.sleep(5000);
 
-        ExecutorService consumeTopics = Executors.newFixedThreadPool(15);
+        ExecutorService consumeTopics = Executors.newFixedThreadPool(numConcurrentConsumers);
         for (int i = 0; i < numTopics; i++) {
             consumerFutures.put(consumeTopics.submit(new ConsumeTopic(i, 0, key)));
             if (consumerFutures.size() >= 100) {
@@ -263,35 +215,27 @@ public class DumbPulsarTopicConsumeTest {
             }
         }
 
-        clearQueue(consumerFutures);
-        /*while (!consumerFutures.isEmpty()) {
-            if (consumerFutures.peek().isDone()) {
-                Future fut = null;
-                try {
-                    fut = consumerFutures.take();
-                    fut.get();
-                } catch (Exception e) {
-                    log.error("Got error...trying to kill threads...", e);
-                    if (fut != null) {
-                        fut.cancel(true);
-                    }
-                    consumeTopics.awaitTermination(1, TimeUnit.SECONDS);
-                    continue;
-                }
-                //log.info("Consumed from topic #{}", runningTally);
-            }
-        }*/
+        try {
+            clearQueue(consumerFutures);
+        } finally {
+            consumeTopics.shutdownNow();
+        }
 
-        consumeTopics.shutdownNow();
     }
 
-    private static int clearQueue(BlockingQueue<Future> futures) throws InterruptedException, ExecutionException {
+    private static int clearQueue(BlockingQueue<Future<Exception>> futures) throws InterruptedException, ExecutionException {
         int runningTally = 0;
         while (!futures.isEmpty()) {
             if (futures.peek().isDone()) {
-                futures.take().get();
+                Future<Exception> f = futures.take();
+                log.info("Waiting for {} to close", f.toString());
+                Exception e = f.get();
+                if (e != null) {
+                    log.error("Fatal error:", e);
+                    throw new ExecutionException(e);
+                }
+
                 runningTally++;
-                //log.info("Created topic #{}", runningTally);
             }
         }
         return runningTally;
