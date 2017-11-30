@@ -188,7 +188,7 @@ public class DumbPulsarTopicConsumeTest {
             }
         }
         ExecutorService writeTopics = Executors.newFixedThreadPool(15);
-        int numTopics = 200;
+        int numTopics = numConcurrentConsumers;
 
         BlockingQueue<Future<Exception>> consumerFutures = new ArrayBlockingQueue<>(100);
 
