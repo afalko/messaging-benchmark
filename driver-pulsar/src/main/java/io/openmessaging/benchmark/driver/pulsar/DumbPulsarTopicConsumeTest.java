@@ -210,7 +210,7 @@ public class DumbPulsarTopicConsumeTest {
         ExecutorService consumeTopics = Executors.newFixedThreadPool(numConcurrentConsumers);
         for (int i = 0; i < numTopics; i++) {
             consumerFutures.put(consumeTopics.submit(new ConsumeTopic(i, 0, key)));
-            if (consumerFutures.size() >= 100) {
+            if (consumerFutures.size() >= numConcurrentConsumers) {
                 clearQueue(consumerFutures);
             }
         }
