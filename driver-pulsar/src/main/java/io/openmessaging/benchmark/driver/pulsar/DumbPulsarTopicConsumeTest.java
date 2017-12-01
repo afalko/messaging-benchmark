@@ -31,7 +31,6 @@ import java.net.URL;
 import java.text.SimpleDateFormat;
 import java.util.Collections;
 import java.util.Date;
-import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -126,13 +125,6 @@ class ConsumeTopic implements Callable<Exception> {
             adminClient.persistentTopics().resetCursor(topic, "sub-" + messageId, 0);
             long consumerCreateTimeEnd = System.currentTimeMillis();
 
-            long peekTimeStart = System.currentTimeMillis();
-            List<Message> messages = adminClient.persistentTopics().peekMessages(topic, "sub-" + messageId, 1);
-            if (messages.size() < 1) {
-                throw new RuntimeException("There are no messages to consume");
-            }
-            long peekTimeEnd = System.currentTimeMillis();
-
             while (true) {
                 AtomicInteger numMessages = new AtomicInteger(0);
                 adminClient.persistentTopics().resetCursor(topic, "sub-" + messageId, 0);
@@ -156,11 +148,9 @@ class ConsumeTopic implements Callable<Exception> {
                 long consumerReceiveTimeEnd = System.currentTimeMillis();
                 if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
                     log.info("Consumed message {}, took {} ms to subscribe, " +
-                                    "took {} ms to peek 1 msg, " +
                                     "took {} ms to consume {} messages",
                             new BigInteger(message.getData()).intValue(),
                             consumerCreateTimeEnd - consumerCreateTimeStart,
-                            peekTimeEnd - peekTimeStart,
                             consumerReceiveTimeEnd - consumerReceiveTimeStart, numMessages);
                     Thread.sleep(1000);
                 }
