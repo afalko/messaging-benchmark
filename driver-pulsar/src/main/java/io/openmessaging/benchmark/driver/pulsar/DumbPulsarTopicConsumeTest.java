@@ -19,15 +19,19 @@
 package io.openmessaging.benchmark.driver.pulsar;
 
 import com.google.common.primitives.Bytes;
+import org.apache.pulsar.client.admin.PersistentTopics;
 import org.apache.pulsar.client.admin.PulsarAdmin;
 import org.apache.pulsar.client.admin.PulsarAdminException;
+import org.apache.pulsar.client.admin.internal.PersistentTopicsImpl;
 import org.apache.pulsar.client.api.*;
+import org.apache.pulsar.common.policies.data.PersistentTopicStats;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.math.BigInteger;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
 import java.util.Collections;
 import java.util.Date;
@@ -74,16 +78,18 @@ class WriteTopic implements Callable<Exception> {
     public Exception call() throws Exception {
         try {
             String topic = String.format("persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/%s-topic-%s", key, messageId);
-            try {
+            /*try {
                 adminClient.persistentTopics().delete(topic);
             } catch (PulsarAdminException.NotFoundException notFound) {
                 // nop
-            }
+            }*/
             //adminClient.persistentTopics().createPartitionedTopic(topic, 2);
             Producer producer = client.createProducer(topic);
-            producer.send(Bytes.toArray(Collections.singleton(messageId)));
-            producer.send(Bytes.toArray(Collections.singleton(messageId)));
-            producer.send(Bytes.toArray(Collections.singleton(messageId)));
+            for (int i = 0; i < 200; i++) {
+                producer.send(MessageBuilder.create()
+                        .setKey(String.valueOf(messageId))
+                        .setContent(ByteBuffer.allocate(4).putInt(i).array()).build());
+            }
             if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
                 log.info("{}: Produced message {}", formatter.format(new Date()), messageId);
             }
@@ -118,17 +124,29 @@ class ConsumeTopic implements Callable<Exception> {
         try {
             String topic = String.format("persistent://prop-us-west-1a-noproxy/us-west-1a-noproxy/ns/%s-topic-%s", key, messageId);
 
+            // Wait for topic to be created
+            while (true) {
+                try {
+                    PersistentTopicStats stats = adminClient.persistentTopics().getStats(topic);
+                    log.info("Topic created {} (size: {}), next step, subscribe", topic, stats.storageSize);
+                    break;
+                } catch (Exception e) {
+                    log.info("Topic not created yet, checking again in 1 second");
+                    Thread.sleep(1000);
+                }
+            }
+
             ConsumerConfiguration conf = new ConsumerConfiguration();
             long consumerCreateTimeStart = System.currentTimeMillis();
             conf.setSubscriptionType(SubscriptionType.Exclusive);
             Consumer consumer = client.subscribe(topic, "sub-" + messageId, conf);
-            adminClient.persistentTopics().resetCursor(topic, "sub-" + messageId, 0);
             long consumerCreateTimeEnd = System.currentTimeMillis();
+            log.info("Started subscribe to topic");
+            Thread.sleep(1000);
 
             while (true) {
                 AtomicInteger numMessages = new AtomicInteger(0);
-                adminClient.persistentTopics().resetCursor(topic, "sub-" + messageId, 0);
-                Thread.sleep(1000);
+                //
                 long consumerReceiveTimeStart = System.currentTimeMillis();
 
                 Message message = consumer.receive(100, TimeUnit.MILLISECONDS);
@@ -140,18 +158,28 @@ class ConsumeTopic implements Callable<Exception> {
                             adminClient.persistentTopics().getInternalStats(topic).cursors.values().stream()
                                     .map(stats -> String.format("State: %s", stats.state))
                                     .collect(Collectors.joining(", ")));
+                            adminClient.persistentTopics().resetCursor(topic, "sub-" + messageId, -1);
+                            Thread.sleep(1000);
                     continue;
                 }
                 numMessages.incrementAndGet();
-                consumer.acknowledge(message);
+                try {
+                    consumer.acknowledge(message);
+                } catch (Exception e) {
+                    if (e.getMessage().contains("Not connected to broker. State: Connecting")) {
+                        log.warn("Waiting for consumer to reconnect...", e);
+                        Thread.sleep(1000);
+                    }
+                }
 
                 long consumerReceiveTimeEnd = System.currentTimeMillis();
                 if (messageId % PRINT_EVERY_NTH_MESSAGE == 0) {
                     log.info("Consumed message {}, took {} ms to subscribe, " +
-                                    "took {} ms to consume {} messages",
+                                    "took {} ms to consume {} messages, topic: {}",
                             new BigInteger(message.getData()).intValue(),
                             consumerCreateTimeEnd - consumerCreateTimeStart,
-                            consumerReceiveTimeEnd - consumerReceiveTimeStart, numMessages);
+                            consumerReceiveTimeEnd - consumerReceiveTimeStart, numMessages,
+                            topic);
                     Thread.sleep(1000);
                 }
             }
@@ -178,33 +206,27 @@ public class DumbPulsarTopicConsumeTest {
             }
         }
         ExecutorService writeTopics = Executors.newFixedThreadPool(15);
+        ExecutorService consumeTopics = Executors.newFixedThreadPool(numConcurrentConsumers);
+
         int numTopics = numConcurrentConsumers;
 
         BlockingQueue<Future<Exception>> consumerFutures = new ArrayBlockingQueue<>(numConcurrentConsumers);
 
         BlockingQueue<Future<Exception>> writeFutures = new ArrayBlockingQueue<>(100);
-        for (int i = 0; i < numTopics; i++) {
-            writeFutures.put(writeTopics.submit(new WriteTopic(i, key)));
+        for (int topic = 1; topic <= numTopics; topic++) {
+            writeFutures.put(writeTopics.submit(new WriteTopic(topic, key)));
             if (writeFutures.size() >= 100) {
                 log.info("Produced 10k topics, ensuring success before proceeding...");
                 clearQueue(writeFutures);
             }
-        }
-        clearQueue(writeFutures);
-
-        writeTopics.shutdown();
-
-        log.info("Finished producing topics; starting consumers after 5 seconds");
-        Thread.sleep(5000);
-
-        ExecutorService consumeTopics = Executors.newFixedThreadPool(numConcurrentConsumers);
-        for (int i = 0; i < numTopics; i++) {
-            consumerFutures.put(consumeTopics.submit(new ConsumeTopic(i, 0, key)));
+            consumerFutures.put(consumeTopics.submit(new ConsumeTopic(topic, 0, key)));
             if (consumerFutures.size() >= numConcurrentConsumers) {
-                clearQueue(consumerFutures);
+                //log.info("hmmmm {}", topicNum);
+                //clearQueue(consumerFutures);
             }
         }
 
+        writeTopics.shutdown();
         try {
             clearQueue(consumerFutures);
         } finally {
